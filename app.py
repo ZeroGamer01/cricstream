@@ -1,6 +1,6 @@
 
 import streamlit as st
-from datetime import datetime
+import requests
 
 st.set_page_config(
     page_title="CricStream",
@@ -8,7 +8,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# ---------------- DESIGN ----------------
+# ----------- DESIGN -----------
 st.markdown("""
 <style>
 .stApp {
@@ -16,10 +16,10 @@ st.markdown("""
     color: white;
 }
 .block-container {
-    padding-top: 1.5rem;
     max-width: 1100px;
+    padding-top: 1.5rem;
 }
-h1, h2, h3, p, label {
+h1, h2, h3, p {
     color: white !important;
 }
 .match-card {
@@ -27,167 +27,149 @@ h1, h2, h3, p, label {
     border: 1px solid #293952;
     padding: 18px;
     border-radius: 16px;
-    margin-bottom: 14px;
-}
-.live {
-    color: #ff4b4b;
-    font-weight: bold;
-}
-.upcoming {
-    color: #38bdf8;
-    font-weight: bold;
-}
-.completed {
-    color: #a3a3a3;
-    font-weight: bold;
+    margin-bottom: 15px;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- HEADER ----------------
+# ----------- HEADER -----------
 st.title("🏏 CricStream")
 st.caption("Your cricket streaming hub")
 
 st.markdown("---")
+st.subheader("🔴 Live Cricket")
 
-# ---------------- SAMPLE MATCH DATA ----------------
-matches = [
-    {
-        "team1": "India",
-        "team2": "Australia",
-        "score": "185/4",
-        "overs": "32.4 overs",
-        "status": "LIVE",
-        "format": "ODI",
-        "info": "India batting"
-    },
-    {
-        "team1": "England",
-        "team2": "Pakistan",
-        "score": "Upcoming",
-        "overs": "Not started",
-        "status": "UPCOMING",
-        "format": "T20",
-        "info": "Today"
-    },
-    {
-        "team1": "South Africa",
-        "team2": "New Zealand",
-        "score": "241/8",
-        "overs": "50 overs",
-        "status": "COMPLETED",
-        "format": "ODI",
-        "info": "Match finished"
-    },
-    {
-        "team1": "Australia",
-        "team2": "England",
-        "score": "Upcoming",
-        "overs": "Not started",
-        "status": "UPCOMING",
-        "format": "TEST",
-        "info": "Tomorrow"
+# ----------- API CONFIG -----------
+API_BASE = "https://cricket.sportmonks.com/api/v2.0"
+
+# ----------- API FUNCTION -----------
+@st.cache_data(ttl=60)
+def get_live_matches(token):
+
+    url = f"{API_BASE}/livescores"
+
+    params = {
+        "api_token": token,
+        "include": "localteam,visitorteam,runs"
     }
-]
 
-# ---------------- FILTERS ----------------
-st.subheader("📺 Match Center")
-
-filter_col, refresh_col = st.columns([3, 1])
-
-with filter_col:
-    selected_format = st.selectbox(
-        "Filter by format",
-        ["All", "T20", "ODI", "TEST"]
+    response = requests.get(
+        url,
+        params=params,
+        timeout=20
     )
 
-with refresh_col:
-    st.write("")
-    st.write("")
-    st.button("🔄 Refresh", use_container_width=True)
+    response.raise_for_status()
 
-tab_live, tab_upcoming, tab_completed = st.tabs(
-    ["🔴 Live", "📅 Upcoming", "🏁 Completed"]
-)
+    result = response.json()
 
-# ---------------- MATCH CARD ----------------
+    return result.get("data", [])
+
+# ----------- HELPERS -----------
+def team_name(team):
+
+    if isinstance(team, dict):
+        return team.get("name", "Unknown team")
+
+    return "Unknown team"
+
+
 def show_match(match):
 
-    status = match["status"]
+    local = team_name(match.get("localteam"))
+    visitor = team_name(match.get("visitorteam"))
 
-    if status == "LIVE":
-        status_color = "#ff4b4b"
-    elif status == "UPCOMING":
-        status_color = "#38bdf8"
-    else:
-        status_color = "#a3a3a3"
+    status = match.get("status", "Live")
+
+    runs_data = match.get("runs", [])
+
+    score_text = ""
+
+    if isinstance(runs_data, list):
+        for innings in runs_data:
+            score = innings.get("score")
+            wickets = innings.get(" wickets")
+
+            if wickets is None:
+                wickets = innings.get("wickets")
+
+            overs = innings.get("overs")
+
+            if score is not None:
+                line = str(score)
+
+                if wickets is not None:
+                    line += "/" + str(wickets)
+
+                if overs is not None:
+                    line += " (" + str(overs) + " overs)"
+
+                score_text += line + "\n"
+
+    if not score_text:
+        score_text = "Score details unavailable"
 
     st.markdown(
         f"""
         <div class="match-card">
-            <div style="color:{status_color};font-weight:bold">
-                {status} | {match["format"]}
-            </div>
-            <h3>{match["team1"]} vs {match["team2"]}</h3>
-            <h2>{match["score"]}</h2>
-            <p>{match["overs"]}</p>
-            <p>{match["info"]}</p>
+            <h3>{local} vs {visitor}</h3>
+            <p><b>Status:</b> {status}</p>
+            <p><b>Score:</b></p>
+            <pre>{score_text}</pre>
         </div>
         """,
         unsafe_allow_html=True
     )
 
-    if status == "LIVE":
-        st.button(
-            "▶ Watch Live",
-            key="watch_" + match["team1"] + match["team2"],
-            disabled=True,
-            help="A streaming source will be connected in a future step."
-        )
+# ----------- LOAD DATA -----------
+if "SPORTMONKS_API_TOKEN" not in st.secrets:
+    st.error("API token is missing. Add it in Streamlit Secrets.")
 
-# ---------------- LIVE ----------------
-with tab_live:
-    live_matches = [
-        m for m in matches
-        if m["status"] == "LIVE"
-        and (selected_format == "All" or m["format"] == selected_format)
-    ]
+else:
 
-    if live_matches:
-        for match in live_matches:
-            show_match(match)
-    else:
-        st.info("No sample live matches in this category.")
+    token = st.secrets["SPORTMONKS_API_TOKEN"]
 
-# ---------------- UPCOMING ----------------
-with tab_upcoming:
-    upcoming_matches = [
-        m for m in matches
-        if m["status"] == "UPCOMING"
-        and (selected_format == "All" or m["format"] == selected_format)
-    ]
+    col1, col2 = st.columns([3, 1])
 
-    if upcoming_matches:
-        for match in upcoming_matches:
-            show_match(match)
-    else:
-        st.info("No sample upcoming matches in this category.")
+    with col1:
+        st.caption("Live match data from Sportmonks")
 
-# ---------------- COMPLETED ----------------
-with tab_completed:
-    completed_matches = [
-        m for m in matches
-        if m["status"] == "COMPLETED"
-        and (selected_format == "All" or m["format"] == selected_format)
-    ]
+    with col2:
+        if st.button("🔄 Refresh scores"):
+            st.cache_data.clear()
+            st.rerun()
 
-    if completed_matches:
-        for match in completed_matches:
-            show_match(match)
-    else:
-        st.info("No sample completed matches in this category.")
+    try:
 
-# ---------------- FOOTER ----------------
+        matches = get_live_matches(token)
+
+        if matches:
+
+            st.success(f"{len(matches)} match record(s) received")
+
+            for match in matches:
+                show_match(match)
+
+        else:
+
+            st.info("No live matches returned by the API right now.")
+
+    except requests.exceptions.HTTPError as e:
+
+        st.error("The API returned an HTTP error.")
+        st.caption(str(e))
+
+    except requests.exceptions.RequestException as e:
+
+        st.error("Unable to connect to the cricket API.")
+        st.caption(str(e))
+
+    except Exception as e:
+
+        st.error("Something went wrong while loading matches.")
+        st.caption(str(e))
+
+# ----------- FOOTER -----------
 st.markdown("---")
-st.caption("CricStream | Live Cricket Hub")
-st.caption("Sample matches only — real match data will be connected later.")
+st.caption("CricStream | Cricket Live Match Center")
+st.caption("Live data powered by Sportmonks")
