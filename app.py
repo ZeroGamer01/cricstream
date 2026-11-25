@@ -1,6 +1,7 @@
 
 import streamlit as st
 import requests
+from datetime import datetime
 
 st.set_page_config(
     page_title="CricStream",
@@ -8,168 +9,125 @@ st.set_page_config(
     layout="wide"
 )
 
-# ----------- DESIGN -----------
-st.markdown("""
-<style>
-.stApp {
-    background: #0b1120;
-    color: white;
-}
-.block-container {
-    max-width: 1100px;
-    padding-top: 1.5rem;
-}
-h1, h2, h3, p {
-    color: white !important;
-}
-.match-card {
-    background: #172338;
-    border: 1px solid #293952;
-    padding: 18px;
-    border-radius: 16px;
-    margin-bottom: 15px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ----------- HEADER -----------
 st.title("🏏 CricStream")
-st.caption("Your cricket streaming hub")
+st.caption("Your cricket live score hub")
 
-st.markdown("---")
-st.subheader("🔴 Live Cricket")
+API_URL = "https://cricket.sportmonks.com/api/v2.0/livescores"
 
-# ----------- API CONFIG -----------
-API_BASE = "https://cricket.sportmonks.com/api/v2.0"
+def get_token():
+    try:
+        return st.secrets["SPORTMONKS_API_TOKEN"]
+    except Exception:
+        return None
 
-# ----------- API FUNCTION -----------
-@st.cache_data(ttl=60)
-def get_live_matches(token):
+def fetch_live_matches():
+    token = get_token()
 
-    url = f"{API_BASE}/livescores"
+    if not token:
+        st.error("API token is missing. Add it in Streamlit App Settings → Secrets.")
+        return None
 
     params = {
         "api_token": token,
-        "include": "localteam,visitorteam,runs"
+        "include": "localteam,visitorteam,league,scoreboards"
     }
 
-    response = requests.get(
-        url,
-        params=params,
-        timeout=20
-    )
+    try:
+        response = requests.get(
+            API_URL,
+            params=params,
+            timeout=20
+        )
 
-    response.raise_for_status()
+        if response.status_code == 503:
+            st.warning("SportMonks is temporarily unavailable (503). Please try again shortly.")
+            return None
 
-    result = response.json()
+        if response.status_code == 429:
+            st.warning("API rate limit reached. Please wait before refreshing.")
+            return None
 
-    return result.get("data", [])
+        if response.status_code == 401 or response.status_code == 403:
+            st.error("API authentication or plan access error. Check your token and subscription.")
+            return None
 
-# ----------- HELPERS -----------
-def team_name(team):
+        response.raise_for_status()
 
+        result = response.json()
+        return result.get("data", [])
+
+    except requests.exceptions.Timeout:
+        st.warning("The API request timed out. Please try again.")
+        return None
+
+    except requests.exceptions.ConnectionError:
+        st.error("Could not connect to SportMonks. Check your internet connection.")
+        return None
+
+    except requests.exceptions.HTTPError as e:
+        st.error(f"API HTTP error: {e.response.status_code}")
+        return None
+
+    except Exception:
+        st.error("Something went wrong while retrieving match data.")
+        return None
+
+
+def get_team_name(team):
     if isinstance(team, dict):
         return team.get("name", "Unknown team")
-
     return "Unknown team"
 
 
-def show_match(match):
+def display_match(match):
+    local = get_team_name(match.get("localteam"))
+    visitor = get_team_name(match.get("visitorteam"))
+    league = match.get("league") or {}
+    league_name = league.get("name", "Cricket")
 
-    local = team_name(match.get("localteam"))
-    visitor = team_name(match.get("visitorteam"))
+    scores = match.get("scoreboards") or []
 
-    status = match.get("status", "Live")
+    st.subheader(f"{local} vs {visitor}")
+    st.caption(f"🏆 {league_name}")
 
-    runs_data = match.get("runs", [])
+    if scores:
+        for score in scores:
+            team_name = score.get("team", "")
+            total = score.get("total", score.get("score", ""))
+            wickets = score.get("wickets", "")
+            overs = score.get("overs", "")
 
-    score_text = ""
+            if total != "":
+                st.write(
+                    f"**{team_name}**: {total}/{wickets} "
+                    f"({overs} overs)"
+                )
+    else:
+        st.info("Score details are not yet available.")
 
-    if isinstance(runs_data, list):
-        for innings in runs_data:
-            score = innings.get("score")
-            wickets = innings.get(" wickets")
+    st.divider()
 
-            if wickets is None:
-                wickets = innings.get("wickets")
 
-            overs = innings.get("overs")
+st.header("🔴 Live Cricket")
 
-            if score is not None:
-                line = str(score)
+if st.button("🔄 Refresh Live Scores"):
+    st.cache_data.clear()
 
-                if wickets is not None:
-                    line += "/" + str(wickets)
+@st.cache_data(ttl=60)
+def cached_matches():
+    return fetch_live_matches()
 
-                if overs is not None:
-                    line += " (" + str(overs) + " overs)"
+matches = cached_matches()
 
-                score_text += line + "\n"
+if matches is not None:
+    if len(matches) == 0:
+        st.info("No live matches are currently returned by the API.")
+    else:
+        st.success(f"Live matches retrieved: {len(matches)}")
 
-    if not score_text:
-        score_text = "Score details unavailable"
+        for match in matches:
+            display_match(match)
 
-    st.markdown(
-        f"""
-        <div class="match-card">
-            <h3>{local} vs {visitor}</h3>
-            <p><b>Status:</b> {status}</p>
-            <p><b>Score:</b></p>
-            <pre>{score_text}</pre>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-# ----------- LOAD DATA -----------
-if "SPORTMONKS_API_TOKEN" not in st.secrets:
-    st.error("API token is missing. Add it in Streamlit Secrets.")
-
-else:
-
-    token = st.secrets["SPORTMONKS_API_TOKEN"]
-
-    col1, col2 = st.columns([3, 1])
-
-    with col1:
-        st.caption("Live match data from Sportmonks")
-
-    with col2:
-        if st.button("🔄 Refresh scores"):
-            st.cache_data.clear()
-            st.rerun()
-
-    try:
-
-        matches = get_live_matches(token)
-
-        if matches:
-
-            st.success(f"{len(matches)} match record(s) received")
-
-            for match in matches:
-                show_match(match)
-
-        else:
-
-            st.info("No live matches returned by the API right now.")
-
-    except requests.exceptions.HTTPError as e:
-
-        st.error("The API returned an HTTP error.")
-        st.caption(str(e))
-
-    except requests.exceptions.RequestException as e:
-
-        st.error("Unable to connect to the cricket API.")
-        st.caption(str(e))
-
-    except Exception as e:
-
-        st.error("Something went wrong while loading matches.")
-        st.caption(str(e))
-
-# ----------- FOOTER -----------
-st.markdown("---")
+st.divider()
 st.caption("CricStream | Cricket Live Match Center")
-st.caption("Live data powered by Sportmonks")
+st.caption("Live data powered by SportMonks")
