@@ -1,179 +1,109 @@
-
 import streamlit as st
 import requests
-from datetime import date, timedelta
+from datetime import datetime, timedelta, timezone
 
-st.set_page_config(
-    page_title="CricStream",
-    page_icon="🏏",
-    layout="wide"
-)
+st.set_page_config(page_title="CricStream", page_icon="🏏", layout="wide")
 
 st.title("🏏 CricStream")
 st.caption("Your cricket live score and match schedule hub")
 
-API_BASE = "https://cricket.sportmonks.com/api/v2.0"
+# Read the API key securely from Streamlit Secrets
+try:
+    API_TOKEN = st.secrets["SPORTMONKS_API_TOKEN"]
+except Exception:
+    st.error("SportMonks API token not found in Streamlit Secrets.")
+    st.stop()
 
-def get_token():
-    try:
-        return st.secrets["SPORTMONKS_API_TOKEN"]
-    except Exception:
-        return None
+BASE_URL = "https://cricket.sportmonks.com/api/v2.0"
 
-def fetch_api(endpoint, params=None):
-    token = get_token()
-
-    if not token:
-        st.error("API token missing. Check Streamlit Secrets.")
-        return None
-
-    if params is None:
-        params = {}
-
-    params["api_token"] = token
+def fetch_matches(endpoint, params=None):
+    params = params or {}
+    params["api_token"] = API_TOKEN
 
     try:
         response = requests.get(
-            f"{API_BASE}/{endpoint}",
+            f"{BASE_URL}/{endpoint}",
             params=params,
-            timeout=25
+            timeout=20
         )
-
-        if response.status_code == 503:
-            st.warning("SportMonks is temporarily unavailable (503).")
-            return None
-
-        if response.status_code == 429:
-            st.warning("API rate limit reached. Please wait.")
-            return None
-
-        if response.status_code in (401, 403):
-            st.error("Token or API plan access problem.")
-            return None
-
         response.raise_for_status()
-        return response.json().get("data", [])
+        result = response.json()
+        return result.get("data", [])
+    except requests.exceptions.RequestException as e:
+        st.error(f"API connection error: {e}")
+        return []
+    except Exception as e:
+        st.error(f"Unexpected error: {e}")
+        return []
 
-    except requests.exceptions.Timeout:
-        st.warning("Request timed out. Try again.")
-    except requests.exceptions.ConnectionError:
-        st.error("Unable to connect to SportMonks.")
-    except requests.exceptions.HTTPError as e:
-        st.error(f"API error: {e.response.status_code}")
-    except Exception:
-        st.error("Unexpected API error.")
-
-    return None
-
-
-def team_name(team):
+def get_name(team):
     if isinstance(team, dict):
         return team.get("name", "Unknown team")
     return "Unknown team"
 
-
-def match_date(match):
-    value = match.get("starting_at", "")
-
-    if value:
-        return value.replace("T", " ")[:16]
-
-    return "Time not available"
-
-
-def show_match(match, upcoming=False):
-    local = team_name(match.get("localteam"))
-    visitor = team_name(match.get("visitorteam"))
-
+def display_match(match):
+    local = get_name(match.get("localteam"))
+    visitor = get_name(match.get("visitorteam"))
     league = match.get("league") or {}
-    venue = match.get("venue") or {}
+    league_name = league.get("name", "Competition") if isinstance(league, dict) else "Competition"
 
-    league_name = league.get("name", "Cricket")
-    venue_name = venue.get("name", "Venue not available")
-
+    fixture_date = match.get("starting_at", "Date unavailable")
     status = match.get("status", "Scheduled")
-    match_type = match.get("type", "Match")
 
-    st.subheader(f"{local} vs {visitor}")
+    with st.container(border=True):
+        st.subheader(f"{local} vs {visitor}")
+        st.caption(f"🏆 {league_name}")
+        st.write(f"📅 {fixture_date}")
+        st.write(f"📌 Status: {status}")
 
-    st.write(f"🏆 **Tournament:** {league_name}")
-    st.write(f"🏏 **Format:** {match_type}")
-    st.write(f"📅 **Date:** {match_date(match)}")
-    st.write(f"📍 **Venue:** {venue_name}")
-    st.write(f"📌 **Status:** {status}")
-
-    if match.get("note"):
-        st.write(f"ℹ️ {match.get('note')}")
-
-    st.divider()
-
-
-@st.cache_data(ttl=60)
-def live_matches():
-    return fetch_api(
-        "livescores",
-        {
-            "include": "localteam,visitorteam,league,scoreboards"
-        }
-    )
-
-
-@st.cache_data(ttl=600)
-def upcoming_matches(start_date, end_date):
-    return fetch_api(
-        "fixtures",
-        {
-            "filter[starts_between]": f"{start_date},{end_date}",
-            "include": "localteam,visitorteam,league,venue",
-            "sort": "starting_at"
-        }
-    )
-
-
-if st.button("🔄 Refresh All Data"):
-    st.cache_data.clear()
-
-today = date.today()
-end_day = today + timedelta(days=14)
+st.divider()
 
 tab1, tab2 = st.tabs(["🔴 Live Matches", "📅 Upcoming Matches"])
 
+# LIVE MATCHES
 with tab1:
-    st.header("🔴 Live Cricket")
+    st.subheader("🔴 Live Cricket")
 
-    live = live_matches()
+    if st.button("🔄 Refresh Live Matches", key="live"):
+        st.cache_data.clear()
 
-    if live is None:
-        st.info("Live data could not be retrieved right now.")
-    elif len(live) == 0:
+    live_matches = fetch_matches("livescores", {
+        "include": "localteam,visitorteam,league"
+    })
+
+    if live_matches:
+        for match in live_matches:
+            display_match(match)
+    else:
         st.info("No live matches currently available.")
-    else:
-        st.success(f"{len(live)} live matches found")
 
-        for match in live:
-            show_match(match)
-
-
+# UPCOMING MATCHES
 with tab2:
-    st.header("📅 Upcoming Cricket Matches")
-    st.caption("Fixtures scheduled over the next 14 days.")
+    st.subheader("📅 Upcoming Cricket Matches")
 
-    upcoming = upcoming_matches(
-        today.isoformat(),
-        end_day.isoformat()
-    )
+    if st.button("🔄 Refresh Upcoming Matches", key="upcoming"):
+        st.cache_data.clear()
 
-    if upcoming is None:
-        st.info("Upcoming fixtures could not be retrieved.")
-    elif len(upcoming) == 0:
-        st.info("No upcoming fixtures returned by the API.")
+    today = datetime.now(timezone.utc).date()
+    end_date = today + timedelta(days=14)
+
+    date_range = f"{today},{end_date}"
+
+    upcoming_matches = fetch_matches("fixtures", {
+    "filter[starts_between]": date_range,
+    "include": "localteam,visitorteam,league"
+})
+
+    if upcoming_matches:
+        for match in upcoming_matches:
+            display_match(match)
     else:
-        st.success(f"{len(upcoming)} fixtures retrieved")
-
-        for match in upcoming:
-            show_match(match, upcoming=True)
-
+        st.info(
+            "No upcoming matches returned. "
+            "The API may have restrictions on fixtures or the filter format."
+        )
 
 st.divider()
+
 st.caption("CricStream | Cricket Match Center")
-st.caption("Powered by SportMonks")
+st.caption("Live and fixture data powered by SportMonks")
