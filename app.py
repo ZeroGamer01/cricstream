@@ -104,13 +104,29 @@ with tab2:
     date_range = f"{today},{end_date}"
 
     upcoming_matches = fetch_data(
-        "fixtures",
-        {
-            "filter[starts_between]": date_range,
-            "include": "localteam,visitorteam,league,venue"
-        }
-    )
+    "fixtures",
+    {
+        "filter[starts_between]": date_range,
+        "include": "localteam,visitorteam,league,venue"
+    }
+)
 
+# Fetch WBBL fixtures (League ID 65)
+wbbl_matches = fetch_data(
+    "fixtures",
+    {
+        "filter[league_id]": 65,
+        "filter[starts_between]": date_range,
+        "include": "localteam,visitorteam,league,venue"
+    }
+)
+
+# Combine matches and remove duplicates
+all_matches = {m.get("id"): m for m in upcoming_matches}
+for match in wbbl_matches:
+    all_matches[match.get("id")] = match
+
+upcoming_matches = list(all_matches.values())
     if upcoming_matches:
 
         formats = ["All"]
